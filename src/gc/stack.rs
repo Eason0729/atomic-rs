@@ -60,16 +60,18 @@ impl<T> AtomicStack<T> {
         });
         let node = Box::leak(boxed_node);
 
-        // node.next = AtomicPtr::new(node);
-        // self.head.swap(node, Ordering::Relaxed);
-        let mut head=self.head.load(Ordering::Relaxed);
+        let mut head = self.head.load(Ordering::Relaxed);
         node.next = AtomicPtr::new(head);
-        while self.head.compare_exchange(head,node,Ordering::AcqRel, Ordering::Relaxed).is_err(){
-            head=self.head.load(Ordering::Relaxed);
+        while self
+            .head
+            .compare_exchange(head, node, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            head = self.head.load(Ordering::Relaxed);
             node.next = AtomicPtr::new(head);
-        };
+        }
 
-        unsafe { &*(*node).data }
+        unsafe { &*node.data }
     }
     pub unsafe fn boxed_pop(&self) -> Option<Box<T>> {
         let popping_node_raw = self.head.load(Ordering::Relaxed);
@@ -102,7 +104,7 @@ impl<T> AtomicStack<T> {
     {
         self.boxed_pop().map(|x| x.as_ref().clone())
     }
-    pub fn into_iter<'a>(&'a self,_guard:&StackGuard<T>) -> QueueIterator<'a, T> {
+    pub fn into_iter<'a>(&'a self, _guard: &StackGuard<T>) -> QueueIterator<'a, T> {
         QueueIterator {
             _stack: self,
             next: self.head.load(Ordering::Relaxed),
@@ -143,7 +145,7 @@ impl<'a, T> Iterator for QueueIterator<'a, T> {
 
 #[cfg(test)]
 pub mod test {
-    use std::sync::atomic::Ordering;
+    use std::{sync::atomic::Ordering, thread};
 
     use super::AtomicStack;
 
@@ -157,15 +159,14 @@ pub mod test {
         let stack = AtomicStack::default();
         stack.push(0_usize);
         stack.push(0_usize);
-        
+
         // trigger miri's detection
-        unsafe{&*stack.head.load(Ordering::Relaxed)};
+        unsafe { &*stack.head.load(Ordering::Relaxed) };
 
         assert_eq!(0, unsafe { stack.pop().unwrap() });
         assert_eq!(0, unsafe { stack.pop().unwrap() });
     }
     #[test]
-    #[ignore = "not ready"]
     fn internal_stack_leak() {
         let stack = AtomicStack::default();
         for i in 0_usize..10 {
@@ -179,5 +180,19 @@ pub mod test {
         for i in (0_usize..10).rev() {
             assert_eq!(i, unsafe { stack.pop().unwrap() })
         }
+    }
+    #[test]
+    #[ignore = "tested, time-consuming"]
+    fn internal_stack_multiple(){
+        let stack = AtomicStack::default();
+        thread::scope(|s| {
+            for _ in 0..30 {
+                s.spawn(|| {
+                    for _ in 0..800 {
+                        stack.push(1_usize);
+                    }
+                });
+            }
+        });
     }
 }

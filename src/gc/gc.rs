@@ -1,8 +1,8 @@
-use std::{cell::Cell, mem};
+use std::{cell::Cell, mem, sync::atomic::{Ordering, fence}};
 
 use super::{
     epoch::{AtomicEpoch, AtomicFlag, Epoch, Flag},
-    stack::{AtomicStack},
+    stack::AtomicStack,
 };
 
 #[derive(Debug)]
@@ -37,7 +37,7 @@ pub struct Global<T, const CAP: usize> {
 impl<T, const CAP: usize> Global<T, CAP> {
     pub fn register<'a>(&'a self) -> Local<'a, T, CAP> {
         let flag = self.flags.push(Default::default());
-        debug_assert_eq!(flag.load(), Flag::default());
+        debug_assert_eq!(flag.load(Ordering::Relaxed), Flag::default());
         let local = Local {
             bag: Default::default(),
             flag: &flag,
@@ -45,17 +45,26 @@ impl<T, const CAP: usize> Global<T, CAP> {
         };
         local
     }
+    #[cold]
     unsafe fn migrate(&self, guard: &PinGuard, bag: Bag<T, CAP>) {
+        let epoch=self.epoch.load(Ordering::Relaxed);
+
+        fence(Ordering::SeqCst);
+
         self.bags[guard.epoch as usize].push(bag);
+
         if let Some(stack_guard) = self.flags.try_own() {
             for flag in self.flags.into_iter(&stack_guard) {
-                if flag.load() == Flag::Unpin {
+                if flag.load(Ordering::SeqCst) == Flag::from_epoch(epoch.decrease()) {
                     return;
                 }
             }
-            let grabages = &self.bags[guard.epoch.decrease() as usize];
+            let grabages = &self.bags[epoch.decrease() as usize];
             while grabages.boxed_pop().is_some() {}
-            self.epoch.store(guard.epoch.increase());
+
+            fence(Ordering::Acquire);
+
+            self.epoch.store(epoch.increase(), Ordering::Relaxed);
         }
     }
 }
@@ -78,11 +87,15 @@ pub struct Local<'a, T, const CAP: usize> {
 }
 
 impl<'a, T, const CAP: usize> Local<'a, T, CAP> {
+    #[inline]
     pub fn pin(&'a self) -> PinGuard<'a> {
-        let epoch = self.global.epoch.load();
+        debug_assert_eq!(self.flag.load(Ordering::Relaxed),Flag::Unpin,"Local was expected to be Flag::Unpin");
+        let epoch = self.global.epoch.load(Ordering::Relaxed);
 
         self.flag
             .compare_and_swap(Flag::Unpin, Flag::from_epoch(epoch));
+
+        fence(Ordering::SeqCst);
 
         PinGuard {
             epoch,
@@ -105,15 +118,36 @@ impl<'a, T, const CAP: usize> Local<'a, T, CAP> {
 
 #[cfg(test)]
 pub mod test {
+    use std::{thread, time::Duration};
+
     use super::Global;
 
     #[test]
-    fn gc_leak() {
+    fn gc_one() {
         let global: Global<usize, 1> = Global::default();
         let local = global.register();
 
         let guard = local.pin();
-        local.migrate(&guard, Box::new(0_usize));
+        for _ in 0..100 {
+            local.migrate(&guard, Box::new(0_usize));
+        }
         drop(guard);
+    }
+    #[test]
+    // #[ignore = "datarace"]
+    fn gc_multiple() {
+        let global: Global<usize, 1> = Global::default();
+
+        thread::scope(|s| {
+            for _ in 0..10 {
+                s.spawn(|| {
+                    let local = global.register();
+                    for i in 0..1000 {
+                        let guard = local.pin();
+                        local.migrate(&guard, Box::new(i % 3))
+                    }
+                });
+            }
+        });
     }
 }

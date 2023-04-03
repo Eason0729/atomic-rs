@@ -18,9 +18,11 @@ impl Default for Epoch {
 }
 
 impl Epoch {
+    #[inline]
     pub fn increase(self) -> Self {
         unsafe { mem::transmute((self as usize + 1) % 3) }
     }
+    #[inline]
     pub fn decrease(self) -> Self {
         unsafe { mem::transmute((self as usize + 2) % 3) }
     }
@@ -36,17 +38,24 @@ pub struct AtomicEpoch(AtomicUsize);
 pub struct AtomicEpoch(AtomicUsize);
 
 impl AtomicEpoch {
-    pub fn store(&self, epoch: Epoch) {
-        self.0.store(epoch as usize, Ordering::Relaxed);
+    #[inline]
+    pub fn store(&self, epoch: Epoch, ordering: Ordering) {
+        self.0.store(epoch as usize, ordering);
     }
-    pub fn load(&self) -> Epoch {
-        unsafe { mem::transmute(self.0.load(Ordering::Relaxed)) }
+    #[inline]
+    pub fn load(&self, ordering: Ordering) -> Epoch {
+        unsafe { mem::transmute(self.0.load(ordering)) }
     }
-    pub fn compare_and_swap(&self, epoch: Epoch) {
-        let old = self.load() as usize;
+    #[inline]
+    pub fn compare_and_swap(&self, old: Epoch, new: Epoch) {
         while self
             .0
-            .compare_exchange(old, epoch as usize, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                old as usize,
+                new as usize,
+                Ordering::SeqCst,
+                Ordering::Acquire,
+            )
             .is_err()
         {}
     }
@@ -68,10 +77,12 @@ pub enum Flag {
 }
 
 impl Flag {
+    #[inline]
     pub fn value(self) -> usize {
         debug_assert_ne!(self, Flag::Unpin);
         self as usize
     }
+    #[inline]
     pub fn from_epoch(epoch: Epoch) -> Self {
         unsafe { mem::transmute(epoch) }
     }
@@ -93,12 +104,15 @@ pub struct AtomicFlag(AtomicUsize);
 pub struct AtomicFlag(AtomicUsize);
 
 impl AtomicFlag {
+    #[inline]
     pub fn store(&self, flag: Flag) {
         self.0.store(flag as usize, Ordering::Relaxed);
     }
-    pub fn load(&self) -> Flag {
-        unsafe { mem::transmute(self.0.load(Ordering::Relaxed)) }
+    #[inline]
+    pub fn load(&self, ordering: Ordering) -> Flag {
+        unsafe { mem::transmute(self.0.load(ordering)) }
     }
+    #[inline]
     pub fn compare_and_swap(&self, old: Flag, new: Flag) {
         while self
             .0
