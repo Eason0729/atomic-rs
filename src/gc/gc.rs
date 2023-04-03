@@ -118,7 +118,7 @@ impl<'a, T, const CAP: usize> Local<'a, T, CAP> {
 
 #[cfg(test)]
 pub mod test {
-    use std::{thread, time::Duration};
+    use std::{thread, time::Duration, sync::Mutex};
 
     use super::Global;
 
@@ -138,10 +138,39 @@ pub mod test {
     fn gc_multiple() {
         let global: Global<usize, 1> = Global::default();
 
+        let mut handles=Vec::new();
+        for _ in 0..10 {
+            handles.push(global.register());
+        }
+        let handles=Mutex::new(handles);
+
         thread::scope(|s| {
             for _ in 0..10 {
                 s.spawn(|| {
-                    let local = global.register();
+                    let local = handles.lock().unwrap().pop().unwrap();
+                    for i in 0..1000 {
+                        let guard = local.pin();
+                        local.migrate(&guard, Box::new(i % 3))
+                    }
+                });
+            }
+        });
+    }
+    #[test]
+    // #[ignore = "datarace"]
+    fn gc_onfly_register() {
+        let global: Global<usize, 1> = Global::default();
+
+        let mut handles=Vec::new();
+        for _ in 0..10 {
+            handles.push(global.register());
+        }
+        let handles=Mutex::new(handles);
+
+        thread::scope(|s| {
+            for _ in 0..10 {
+                s.spawn(|| {
+                    let local = handles.lock().unwrap().pop().unwrap();
                     for i in 0..1000 {
                         let guard = local.pin();
                         local.migrate(&guard, Box::new(i % 3))
