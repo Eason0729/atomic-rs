@@ -47,15 +47,14 @@ impl<T, const CAP: usize> Global<T, CAP> {
     }
     #[cold]
     unsafe fn migrate(&self, guard: &PinGuard, bag: Bag<T, CAP>) {
-        let epoch=self.epoch.load(Ordering::Relaxed);
-
-        fence(Ordering::SeqCst);
-
         self.bags[guard.epoch as usize].push(bag);
+
+        let epoch=self.epoch.load(Ordering::Relaxed);
+        fence(Ordering::SeqCst);
 
         if let Some(stack_guard) = self.flags.try_own() {
             for flag in self.flags.into_iter(&stack_guard) {
-                if flag.load(Ordering::SeqCst) == Flag::from_epoch(epoch.decrease()) {
+                if flag.load(Ordering::Acquire) == Flag::from_epoch(epoch.decrease()) {
                     return;
                 }
             }
@@ -63,8 +62,7 @@ impl<T, const CAP: usize> Global<T, CAP> {
             while grabages.boxed_pop().is_some() {}
 
             fence(Ordering::Acquire);
-
-            self.epoch.store(epoch.increase(), Ordering::Relaxed);
+            self.epoch.store(epoch.increase(), Ordering::Release);
         }
     }
 }
@@ -76,7 +74,7 @@ pub struct PinGuard<'a> {
 
 impl<'a> Drop for PinGuard<'a> {
     fn drop(&mut self) {
-        self.flag.store(Flag::Unpin);
+        self.flag.store(Flag::Unpin,Ordering::Relaxed);
     }
 }
 
@@ -92,9 +90,7 @@ impl<'a, T, const CAP: usize> Local<'a, T, CAP> {
         debug_assert_eq!(self.flag.load(Ordering::Relaxed),Flag::Unpin,"Local was expected to be Flag::Unpin");
         let epoch = self.global.epoch.load(Ordering::Relaxed);
 
-        self.flag
-            .compare_and_swap(Flag::Unpin, Flag::from_epoch(epoch));
-
+        self.flag.store(Flag::from_epoch(epoch),Ordering::SeqCst);
         fence(Ordering::SeqCst);
 
         PinGuard {
@@ -118,7 +114,7 @@ impl<'a, T, const CAP: usize> Local<'a, T, CAP> {
 
 #[cfg(test)]
 pub mod test {
-    use std::{thread, time::Duration, sync::Mutex};
+    use std::{thread, sync::Mutex};
 
     use super::Global;
 
@@ -134,7 +130,7 @@ pub mod test {
         drop(guard);
     }
     #[test]
-    // #[ignore = "datarace"]
+    // #[ignore = "tested, time-consuming"]
     fn gc_multiple() {
         let global: Global<usize, 1> = Global::default();
 
@@ -145,35 +141,33 @@ pub mod test {
         let handles=Mutex::new(handles);
 
         thread::scope(|s| {
-            for _ in 0..10 {
+            for _ in 0..30 {
                 s.spawn(|| {
-                    let local = handles.lock().unwrap().pop().unwrap();
-                    for i in 0..1000 {
+                    let mut lock=handles.lock().unwrap();
+                    let local = lock.pop().unwrap();
+                    drop(lock);
+                    for i in 0..500 {
                         let guard = local.pin();
-                        local.migrate(&guard, Box::new(i % 3))
+                        local.migrate(&guard, Box::new(i % 3));
+                        drop(guard);
                     }
                 });
             }
         });
     }
     #[test]
-    // #[ignore = "datarace"]
+    #[ignore = "datarace"]
     fn gc_onfly_register() {
         let global: Global<usize, 1> = Global::default();
-
-        let mut handles=Vec::new();
-        for _ in 0..10 {
-            handles.push(global.register());
-        }
-        let handles=Mutex::new(handles);
 
         thread::scope(|s| {
             for _ in 0..10 {
                 s.spawn(|| {
-                    let local = handles.lock().unwrap().pop().unwrap();
+                    let local = global.register();
                     for i in 0..1000 {
                         let guard = local.pin();
-                        local.migrate(&guard, Box::new(i % 3))
+                        local.migrate(&guard, Box::new(i % 3));
+                        drop(guard);
                     }
                 });
             }

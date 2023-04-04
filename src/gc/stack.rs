@@ -60,15 +60,15 @@ impl<T> AtomicStack<T> {
         });
         let node = Box::leak(boxed_node);
 
-        let mut head = self.head.load(Ordering::Relaxed);
-        node.next = AtomicPtr::new(head);
-        while self
-            .head
-            .compare_exchange(head, node, Ordering::AcqRel, Ordering::Relaxed)
-            .is_err()
-        {
-            head = self.head.load(Ordering::Relaxed);
+        loop{
+            let head = self.head.load(Ordering::Relaxed);
             node.next = AtomicPtr::new(head);
+            if self
+            .head
+            .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Relaxed).is_ok()
+            {
+                break;
+            }
         }
 
         unsafe { &*node.data }
@@ -137,7 +137,7 @@ impl<'a, T> Iterator for QueueIterator<'a, T> {
             None
         } else {
             let node = unsafe { &*self.next };
-            self.next = node.next.load(Ordering::Relaxed);
+            self.next = node.next.load(Ordering::Acquire);
             Some(unsafe { &*node.data })
         }
     }
