@@ -1,7 +1,7 @@
 use std::{
     mem,
     ops::Deref,
-    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
 };
 
 #[derive(Debug)]
@@ -53,6 +53,8 @@ impl<T> AtomicStack<T> {
         self.boxed_push(Box::new(value))
     }
     pub fn boxed_push<'a>(&'a self, value: Box<T>) -> &'a T {
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.is_taken.load(Ordering::Acquire),false,"expect stack untaken when pushing");
         let value = Box::into_raw(value);
         let boxed_node = Box::new(Node {
             next: AtomicPtr::default(),
@@ -60,12 +62,13 @@ impl<T> AtomicStack<T> {
         });
         let node = Box::leak(boxed_node);
 
-        loop{
+        loop {
             let head = self.head.load(Ordering::Relaxed);
             node.next = AtomicPtr::new(head);
             if self
-            .head
-            .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Relaxed).is_ok()
+                .head
+                .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
             {
                 break;
             }
@@ -113,7 +116,7 @@ impl<T> AtomicStack<T> {
     pub unsafe fn try_own(&self) -> Option<StackGuard<T>> {
         if self
             .is_taken
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
             Some(StackGuard(self))
@@ -183,7 +186,7 @@ pub mod test {
     }
     #[test]
     #[ignore = "tested, time-consuming"]
-    fn internal_stack_multiple(){
+    fn internal_stack_multiple() {
         let stack = AtomicStack::default();
         thread::scope(|s| {
             for _ in 0..30 {

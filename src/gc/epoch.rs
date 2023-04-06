@@ -105,7 +105,7 @@ pub struct AtomicFlag(AtomicUsize);
 
 impl AtomicFlag {
     #[inline]
-    pub fn store(&self, flag: Flag,ordering: Ordering) {
+    pub fn store(&self, flag: Flag, ordering: Ordering) {
         self.0.store(flag as usize, ordering);
     }
     #[inline]

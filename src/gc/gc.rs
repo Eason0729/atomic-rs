@@ -1,4 +1,8 @@
-use std::{cell::Cell, mem, sync::atomic::{Ordering, fence}};
+use std::{
+    cell::Cell,
+    mem,
+    sync::atomic::{fence, Ordering},
+};
 
 use super::{
     epoch::{AtomicEpoch, AtomicFlag, Epoch, Flag},
@@ -28,7 +32,7 @@ impl<T, const CAP: usize> Bag<T, CAP> {
 }
 
 #[derive(Debug, Default)]
-pub struct Global<T, const CAP: usize> {
+pub struct Global<T, const CAP: usize=128> {
     epoch: AtomicEpoch,
     bags: [AtomicStack<Bag<T, CAP>>; 3],
     flags: AtomicStack<AtomicFlag>,
@@ -49,7 +53,7 @@ impl<T, const CAP: usize> Global<T, CAP> {
     unsafe fn migrate(&self, guard: &PinGuard, bag: Bag<T, CAP>) {
         self.bags[guard.epoch as usize].push(bag);
 
-        let epoch=self.epoch.load(Ordering::Relaxed);
+        let epoch = self.epoch.load(Ordering::Relaxed);
         fence(Ordering::SeqCst);
 
         if let Some(stack_guard) = self.flags.try_own() {
@@ -74,7 +78,7 @@ pub struct PinGuard<'a> {
 
 impl<'a> Drop for PinGuard<'a> {
     fn drop(&mut self) {
-        self.flag.store(Flag::Unpin,Ordering::Relaxed);
+        self.flag.store(Flag::Unpin, Ordering::Relaxed);
     }
 }
 
@@ -87,10 +91,14 @@ pub struct Local<'a, T, const CAP: usize> {
 impl<'a, T, const CAP: usize> Local<'a, T, CAP> {
     #[inline]
     pub fn pin(&'a self) -> PinGuard<'a> {
-        debug_assert_eq!(self.flag.load(Ordering::Relaxed),Flag::Unpin,"Local was expected to be Flag::Unpin");
+        debug_assert_eq!(
+            self.flag.load(Ordering::Relaxed),
+            Flag::Unpin,
+            "Local was expected to be unpinned"
+        );
         let epoch = self.global.epoch.load(Ordering::Relaxed);
 
-        self.flag.store(Flag::from_epoch(epoch),Ordering::SeqCst);
+        self.flag.store(Flag::from_epoch(epoch), Ordering::SeqCst);
         fence(Ordering::SeqCst);
 
         PinGuard {
@@ -114,7 +122,7 @@ impl<'a, T, const CAP: usize> Local<'a, T, CAP> {
 
 #[cfg(test)]
 pub mod test {
-    use std::{thread, sync::Mutex};
+    use std::{sync::Mutex, thread};
 
     use super::Global;
 
@@ -134,16 +142,16 @@ pub mod test {
     fn gc_multiple() {
         let global: Global<usize, 1> = Global::default();
 
-        let mut handles=Vec::new();
-        for _ in 0..10 {
+        let mut handles = Vec::new();
+        for _ in 0..30 {
             handles.push(global.register());
         }
-        let handles=Mutex::new(handles);
+        let handles = Mutex::new(handles);
 
         thread::scope(|s| {
             for _ in 0..30 {
                 s.spawn(|| {
-                    let mut lock=handles.lock().unwrap();
+                    let mut lock = handles.lock().unwrap();
                     let local = lock.pop().unwrap();
                     drop(lock);
                     for i in 0..500 {
